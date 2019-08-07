@@ -2,8 +2,17 @@
 
 namespace Zet\FileUpload\Model;
 
+use Exception;
+use Nette\Application\Responses\JsonResponse;
+use Nette\Application\UI\Control;
+use Nette\Http\FileUpload;
+use Nette\Http\Request;
 use Nette\InvalidStateException;
-use Tracy\Debugger;
+use Nette\UnexpectedValueException;
+use Nette\Utils\Html;
+use Zet\FileUpload\FileUploadControl;
+use Zet\FileUpload\Filter\IMimeTypeFilter;
+use Zet\FileUpload\InvalidFileException;
 use Zet\FileUpload\Template\JavascriptBuilder;
 use Zet\FileUpload\Template\Renderer\BaseRenderer;
 
@@ -13,92 +22,91 @@ use Zet\FileUpload\Template\Renderer\BaseRenderer;
  * @author  Zechy <email@zechy.cz>
  * @package Zet\FileUpload
  */
-class UploadController extends \Nette\Application\UI\Control {
-	
+class UploadController extends Control {
+
 	/**
-	 * @var \Zet\FileUpload\FileUploadControl
+	 * @var FileUploadControl
 	 */
 	private $uploadControl;
-	
+
 	/**
-	 * @var \Nette\Http\Request
+	 * @var Request
 	 */
 	private $request;
-	
+
 	/**
-	 * @var \Zet\FileUpload\Filter\IMimeTypeFilter
+	 * @var IMimeTypeFilter
 	 */
 	private $filter;
-	
+
 	/**
 	 * @var BaseRenderer
 	 */
 	private $renderer;
-	
+
 	/**
 	 * UploadController constructor.
 	 *
-	 * @param \Zet\FileUpload\FileUploadControl $uploadControl
+	 * @param FileUploadControl $uploadControl
 	 */
-	public function __construct(\Zet\FileUpload\FileUploadControl $uploadControl) {
-		parent::__construct();
+	public function __construct(FileUploadControl $uploadControl) {
 		$this->uploadControl = $uploadControl;
 	}
-	
+
 	/**
-	 * @param \Nette\Http\Request $request
+	 * @param Request $request
 	 */
 	public function setRequest($request) {
 		$this->request = $request;
 	}
-	
+
 	/**
-	 * @return \Zet\FileUpload\Filter\IMimeTypeFilter|NULL
+	 * @return IMimeTypeFilter|NULL
 	 */
 	public function getFilter() {
-		if(is_null($this->filter)) {
+		if($this->filter === null) {
 			/** @noinspection PhpInternalEntityUsedInspection */
 			$className = $this->uploadControl->getFileFilter();
-			if(!is_null($className)) {
+			if($className !== null) {
 				$filterClass = new $className;
-				if($filterClass instanceof \Zet\FileUpload\Filter\IMimeTypeFilter) {
+				if($filterClass instanceof IMimeTypeFilter) {
 					$this->filter = $filterClass;
 				} else {
-					throw new \Nette\UnexpectedValueException(
+					throw new UnexpectedValueException(
 						"Třída pro filtrování souborů neimplementuje rozhraní \\Zet\\FileUpload\\Filter\\IMimeTypeFilter."
 					);
 				}
 			}
 		}
-		
+
 		return $this->filter;
 	}
-	
+
 	/**
-	 * @return \Zet\FileUpload\FileUploadControl
+	 * @return FileUploadControl
 	 */
 	public function getUploadControl() {
 		return $this->uploadControl;
 	}
-	
+
 	/**
 	 * @return BaseRenderer
 	 */
 	public function getRenderer() {
-		if(is_null($this->renderer)) {
+		if($this->renderer === null) {
 			$rendererClass = $this->uploadControl->getRenderer();
 			$this->renderer = new $rendererClass($this->uploadControl, $this->uploadControl->getTranslator());
-			
+
 			if(!($this->renderer instanceof BaseRenderer)) {
 				throw new InvalidStateException(
 					"Renderer musí být instancí třídy `\\Zet\\FileUpload\\Template\\BaseRenderer`."
 				);
 			}
 		}
-		
+
 		return $this->renderer;
 	}
-	
+
 	/**
 	 * Vytvoření šablony s JavaScriptem pro FileUpload.
 	 *
@@ -109,19 +117,19 @@ class UploadController extends \Nette\Application\UI\Control {
 			$this->getRenderer(),
 			$this
 		);
-		
+
 		return $builder->getJsTemplate();
 	}
-	
+
 	/**
 	 * Vytvoření šablony s přehledem o uploadu.
 	 *
-	 * @return \Nette\Utils\Html
+	 * @return Html
 	 */
 	public function getControlTemplate() {
 		return $this->getRenderer()->buildDefaultTemplate();
 	}
-	
+
 	/**
 	 * Zpracování uploadu souboru.
 	 */
@@ -129,19 +137,19 @@ class UploadController extends \Nette\Application\UI\Control {
 		$files = $this->request->getFiles();
 		$token = $this->request->getPost("token");
 		$params = json_decode($this->request->getPost("params"), true);
-		
-		/** @var \Nette\Http\FileUpload $file */
+
+		/** @var FileUpload $file */
 		$file = $files[ $this->uploadControl->getHtmlName() ];
 		/** @noinspection PhpInternalEntityUsedInspection */
 		$model = $this->uploadControl->getUploadModel();
 		$cache = $this->uploadControl->getCache();
 		$filter = $this->getFilter();
-		
+
 		try {
-			if(!is_null($filter) && !$filter->checkType($file)) {
-				throw new \Zet\FileUpload\InvalidFileException($this->getFilter()->getAllowedTypes());
+			if($filter !== null && !$filter->checkType($file)) {
+				throw new InvalidFileException($this->getFilter()->getAllowedTypes());
 			}
-			
+
 			if($file->isOk()) {
 				$returnData = $model->save($file, $params);
 				/** @noinspection PhpInternalEntityUsedInspection */
@@ -153,59 +161,66 @@ class UploadController extends \Nette\Application\UI\Control {
 				}
 				/** @noinspection PhpInternalEntityUsedInspection */
 				$cache->save($this->uploadControl->getTokenizedCacheName($token), $cacheFiles);
+				$this->uploadControl->onUpload($returnData, $file);
 			}
-			
-		} catch(\Zet\FileUpload\InvalidFileException $e) {
-			$this->presenter->sendResponse(new \Nette\Application\Responses\JsonResponse([
+
+		} catch(InvalidFileException $e) {
+			$this->presenter->sendResponse(new JsonResponse([
 				"id" => $this->request->getPost("id"),
 				"error" => 100,
 				"errorMessage" => $e->getMessage()
 			]));
-			
-		} catch(\Exception $e) {
-			$this->presenter->sendResponse(new \Nette\Application\Responses\JsonResponse([
+
+		} catch(Exception $e) {
+			$this->presenter->sendResponse(new JsonResponse([
 				"id" => $this->request->getPost("id"),
 				"error" => 99,
 				"errorMessage" => $e->getMessage()
 			]));
 		}
-		
-		$this->presenter->sendResponse(new \Nette\Application\Responses\JsonResponse([
+
+		$this->presenter->sendResponse(new JsonResponse([
 			"id" => $this->request->getPost("id"),
 			"error" => $file->getError()
 		]));
 	}
-	
+
 	/**
 	 * Odstraní nahraný soubor.
 	 */
 	public function handleRemove() {
 		$id = $this->request->getQuery("id");
 		$token = $this->request->getQuery("token");
-		$default = $this->request->getQuery("default", 0);
-		
-		if($default == 0) {
+		$default = (int) ($this->request->getQuery("default") ?? 0);
+
+		if(0 === $default) {
 			$cache = $this->uploadControl->getCache();
 			/** @noinspection PhpInternalEntityUsedInspection */
 			$cacheFiles = $cache->load($this->uploadControl->getTokenizedCacheName($token));
 			if(isset($cacheFiles[ $id ])) {
 				/** @noinspection PhpInternalEntityUsedInspection */
+				$deletedFile = $cacheFiles[ $id ];
 				$this->uploadControl->getUploadModel()->remove($cacheFiles[ $id ]);
 				unset($cacheFiles[ $id ]);
 				/** @noinspection PhpInternalEntityUsedInspection */
 				$cache->save($this->uploadControl->getTokenizedCacheName($token), $cacheFiles);
+                $this->uploadControl->onDelete([$deletedFile]); // TODO args?
 			}
 		} else {
 			$files = $this->uploadControl->getDefaultFiles();
-			
+            $deletedFiles = [];
+
 			foreach($files as $file) {
 				if($file->getIdentifier() == $id) {
+				    $deletedFiles[] = $file;
 					$file->onDelete($id);
 				}
+
+                $deletedFiles && $this->uploadControl->onDelete($deletedFiles); // TODO args?
 			}
 		}
 	}
-	
+
 	/**
 	 * Přejmenuje nahraný soubor.
 	 */
@@ -213,19 +228,20 @@ class UploadController extends \Nette\Application\UI\Control {
 		$id = $this->request->getQuery("id");
 		$newName = $this->request->getQuery("newName");
 		$token = $this->request->getQuery("token");
-		
+
 		$cache = $this->uploadControl->getCache();
 		/** @noinspection PhpInternalEntityUsedInspection */
 		$cacheFiles = $cache->load($this->uploadControl->getTokenizedCacheName($token));
-		
+
 		if(isset($cacheFiles[ $id ])) {
 			/** @noinspection PhpInternalEntityUsedInspection */
 			$cacheFiles[ $id ] = $this->uploadControl->getUploadModel()->rename($cacheFiles[ $id ], $newName);
 			/** @noinspection PhpInternalEntityUsedInspection */
 			$cache->save($this->uploadControl->getTokenizedCacheName($token), $cacheFiles);
+			$this->uploadControl->onRename($cacheFiles[ $id ], $newName);
 		}
 	}
-	
+
 	public function validate() {
 		// Nette ^2.3.10 bypass
 	}
